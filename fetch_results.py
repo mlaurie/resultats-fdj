@@ -180,14 +180,12 @@ def query_game_name(query_key: list[Any]) -> str | None:
     return game_name if isinstance(game_name, str) else None
 
 
-def collect_fdj_data() -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+def collect_fdj_data() -> tuple[dict[str, Any], dict[str, Any]]:
     results: dict[str, Any] = {}
     announces: dict[str, Any] = {}
-    source_urls: list[str] = []
 
     for url in FDJ_URLS.values():
-        html_text, effective_url = fetch_html(url)
-        source_urls.append(effective_url)
+        html_text, _ = fetch_html(url)
         stream = decode_next_flight(html_text)
 
         for query_array in query_arrays_from_stream(stream):
@@ -211,7 +209,7 @@ def collect_fdj_data() -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     if missing:
         raise FDJError("Resultats manquants: " + ", ".join(missing))
 
-    return results, announces, sorted(set(source_urls))
+    return results, announces
 
 
 def parse_iso(value: str) -> datetime:
@@ -402,7 +400,7 @@ def merge_current_history(current: dict[str, Any], history: list[dict[str, Any]]
 
 
 def build_bundle() -> dict[str, Any]:
-    raw_results, raw_announces, source_urls = collect_fdj_data()
+    raw_results, raw_announces = collect_fdj_data()
     loto_result = raw_results["loto"]
     euro_result = raw_results["euromillions"]
     loto_announce = pick_announce("loto", raw_announces.get("loto"))
@@ -417,7 +415,6 @@ def build_bundle() -> dict[str, Any]:
     bundle = {
         "updated_at": now.isoformat(timespec="seconds"),
         "updated_label": f"{format_date(now.isoformat())} a {format_time(now.isoformat())}",
-        "source_urls": sorted(set(source_urls + list(FDJ_HISTORY_URLS.values()))),
         "loto": {**loto, "history": loto_history},
         "euromillions": {**euro, "history": euro_history},
     }
@@ -443,9 +440,6 @@ def render_html(bundle: dict[str, Any]) -> str:
         },
         ensure_ascii=False,
     ).replace("</", "<\\/")
-    sources = "\n".join(
-        f'<a href="{escape(url)}" rel="noreferrer">{escape(url)}</a>' for url in bundle["source_urls"]
-    )
 
     return f"""<!doctype html>
 <html lang="fr">
@@ -595,15 +589,6 @@ def render_html(bundle: dict[str, Any]) -> str:
       color: var(--muted);
       font-size: 1rem;
     }}
-    footer {{
-      margin-top: 18px;
-      color: var(--muted);
-      font-size: .9rem;
-    }}
-    footer a {{
-      color: inherit;
-      overflow-wrap: anywhere;
-    }}
     @media (max-width: 760px) {{
       header {{
         display: block;
@@ -658,11 +643,6 @@ def render_html(bundle: dict[str, Any]) -> str:
         <p class="detail">Prochain tirage : <strong>{escape(euro["next_draw"] or "non publie")}</strong></p>
       </section>
     </div>
-
-    <footer>
-      <p>Resultats communiques a titre indicatif. Pour un gain, verifier le recu et les resultats officiels FDJ.</p>
-      <p>Sources FDJ : {sources}</p>
-    </footer>
   </main>
   <script id="results-data" type="application/json">{history_json}</script>
   <script>
