@@ -595,12 +595,12 @@ def render_html(bundle: dict[str, Any]) -> str:
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: clamp(58px, 16vw, 76px);
+      width: clamp(48px, 13vw, 62px);
       aspect-ratio: 1;
       border-radius: 50%;
       color: #fff;
       font-weight: 800;
-      font-size: clamp(1.7rem, 5vw, 2.2rem);
+      font-size: clamp(1.4rem, 4.2vw, 1.8rem);
       line-height: 1;
       box-shadow: inset 0 -5px 0 rgba(0,0,0,.18);
     }}
