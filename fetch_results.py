@@ -36,6 +36,11 @@ FDJ_LATEST_ARCHIVES = {
     "euromillions": "euromillions_202002",
 }
 
+# Tirages exceptionnels (Grand Loto, Super Loto) : meme format CSV que le Loto
+# classique mais publies dans des archives separees, qu'on fusionne dans
+# l'historique Loto.
+FDJ_LOTO_EXTRA_ARCHIVES = ["superloto_201907", "grandloto_201912"]
+
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
@@ -272,25 +277,34 @@ def format_plain_date(value: date) -> str:
     return f"{DAYS[value.weekday()]} {value.day} {MONTHS[value.month - 1]} {value.year}"
 
 
-def archive_download_url(game: str) -> str:
+def archive_urls(game: str) -> dict[str, str]:
+    """Map each downloadable archive name to its FDJ URL for a game."""
+
     html_text, _ = fetch_html(FDJ_HISTORY_URLS[game])
-    wanted = FDJ_LATEST_ARCHIVES[game]
+    urls: dict[str, str] = {}
 
     for anchor in re.finditer(r"<a\b[^>]*>", html_text):
         attrs = dict(re.findall(r'([:\w-]+)="([^"]*)"', anchor.group(0)))
-        if attrs.get("download") == wanted and attrs.get("href"):
-            return html.unescape(attrs["href"])
+        name = attrs.get("download")
+        if name and attrs.get("href"):
+            urls.setdefault(name, html.unescape(attrs["href"]))
 
-    raise FDJError(f"Archive FDJ introuvable pour {game}.")
+    return urls
 
 
-def archive_rows(game: str) -> list[dict[str, str]]:
-    archive = fetch_bytes(archive_download_url(game))
+def archive_names(game: str) -> list[str]:
+    if game == "loto":
+        return [FDJ_LATEST_ARCHIVES[game], *FDJ_LOTO_EXTRA_ARCHIVES]
+    return [FDJ_LATEST_ARCHIVES[game]]
+
+
+def archive_rows_from_url(url: str) -> list[dict[str, str]]:
+    archive = fetch_bytes(url)
 
     with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
         csv_names = [name for name in zipped.namelist() if name.lower().endswith(".csv")]
         if not csv_names:
-            raise FDJError(f"Aucun CSV dans l'archive {game}.")
+            raise FDJError(f"Aucun CSV dans l'archive {url}.")
         csv_text = zipped.read(csv_names[0]).decode("utf-8-sig")
 
     return list(csv.DictReader(io.StringIO(csv_text), delimiter=";"))
@@ -345,14 +359,26 @@ def normalize_euro_archive_row(row: dict[str, str]) -> dict[str, Any]:
 def build_archive_history(game: str, days: int = 31) -> list[dict[str, Any]]:
     cutoff = datetime.now().date() - timedelta(days=days)
     normalizer = normalize_loto_archive_row if game == "loto" else normalize_euro_archive_row
+    urls = archive_urls(game)
     history: list[dict[str, Any]] = []
+    seen: set[str] = set()
 
-    for row in archive_rows(game):
-        draw_date = parse_csv_date(row["date_de_tirage"])
-        if draw_date < cutoff:
-            break
-        history.append(normalizer(row))
+    for name in archive_names(game):
+        url = urls.get(name)
+        if not url:
+            continue
+        for row in archive_rows_from_url(url):
+            draw_date = parse_csv_date(row["date_de_tirage"])
+            if draw_date < cutoff:
+                # Chaque archive est triee du plus recent au plus ancien.
+                break
+            item = normalizer(row)
+            if item["date_key"] in seen:
+                continue
+            seen.add(item["date_key"])
+            history.append(item)
 
+    history.sort(key=lambda item: item["date_key"], reverse=True)
     return history
 
 
@@ -436,6 +462,17 @@ def codes(values: list[str]) -> str:
     return "".join(f'<span class="code">{escape(value)}</span>' for value in values)
 
 
+def next_draw_block(value: str | None) -> str:
+    if not value:
+        return '<p class="next-line">non publie</p>'
+    parts = [part.strip() for part in value.split(" - ") if part.strip()]
+    if not parts:
+        return '<p class="next-line">non publie</p>'
+    lines = [f'<p class="next-date">{escape(parts[0])}</p>']
+    lines += [f'<p class="next-line">{escape(part)}</p>' for part in parts[1:]]
+    return "".join(lines)
+
+
 def render_html(bundle: dict[str, Any]) -> str:
     loto = bundle["loto"]
     euro = bundle["euromillions"]
@@ -460,216 +497,258 @@ def render_html(bundle: dict[str, Any]) -> str:
   <link rel="manifest" href="./manifest.webmanifest">
   <style>
     :root {{
-      --ink: #1b1d2a;
-      --muted: #5f6472;
-      --paper: #fffdf8;
+      --ink: #16181f;
+      --muted: #4a4f5c;
+      --paper: #fbf7ee;
       --panel: #ffffff;
-      --line: #dedfd7;
-      --blue: #214ed3;
-      --red: #c7353f;
-      --green: #23765a;
-      --gold: #f0c443;
+      --line: #d3d4cc;
+      --blue: #1746c4;
+      --red: #c12530;
+      --green: #1d6b4f;
+      --gold: #e3b02f;
     }}
     * {{ box-sizing: border-box; }}
+    html {{ -webkit-text-size-adjust: 100%; }}
     body {{
       margin: 0;
       min-height: 100vh;
-      background:
-        linear-gradient(180deg, rgba(240,196,67,.18), rgba(35,118,90,.10) 42%, rgba(33,78,211,.10)),
-        var(--paper);
+      background: var(--paper);
       color: var(--ink);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 20px;
+      line-height: 1.45;
     }}
     main {{
-      width: min(1100px, calc(100% - 28px));
+      width: min(620px, calc(100% - 24px));
       margin: 0 auto;
-      padding: 28px 0 34px;
+      padding: 22px 0 40px;
     }}
     header {{
-      display: flex;
-      align-items: flex-end;
-      justify-content: space-between;
-      gap: 18px;
-      margin-bottom: 20px;
+      text-align: center;
+      margin-bottom: 22px;
     }}
     h1 {{
       margin: 0;
-      font-size: clamp(2rem, 5vw, 4.6rem);
-      line-height: 1;
-      letter-spacing: 0;
+      font-size: clamp(2rem, 8vw, 2.8rem);
+      line-height: 1.1;
     }}
     .updated {{
       margin: 10px 0 0;
       color: var(--muted);
-      font-size: 1rem;
-    }}
-    .grid {{
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 16px;
+      font-size: 1.05rem;
     }}
     .game-card {{
-      min-width: 0;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: rgba(255,255,255,.92);
-      box-shadow: 0 14px 34px rgba(23, 31, 47, .09);
-      padding: clamp(18px, 3vw, 28px);
+      border: 2px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel);
+      box-shadow: 0 6px 18px rgba(23, 31, 47, .08);
+      padding: 22px 20px 26px;
+      margin-bottom: 22px;
     }}
     .game-card h2 {{
-      margin: 0;
-      font-size: clamp(1.6rem, 4vw, 3rem);
-      line-height: 1;
-      letter-spacing: 0;
+      margin: 0 0 4px;
+      font-size: clamp(1.7rem, 6vw, 2.2rem);
+      line-height: 1.1;
     }}
+    .loto-bar {{ height: 6px; background: var(--blue); border-radius: 99px; margin-bottom: 14px; }}
+    .euro-bar {{ height: 6px; background: var(--gold); border-radius: 99px; margin-bottom: 14px; }}
     .history-picker {{
-      display: grid;
-      gap: 6px;
-      margin: 18px 0 12px;
+      display: block;
+      margin: 4px 0 20px;
+    }}
+    .history-picker span {{
+      display: block;
+      margin-bottom: 6px;
+      font-size: 1.05rem;
+      font-weight: 700;
       color: var(--muted);
-      font-size: .95rem;
-      font-weight: 800;
-      text-transform: uppercase;
     }}
     .history-picker select {{
       width: 100%;
-      min-height: 48px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
+      min-height: 60px;
+      border: 2px solid var(--ink);
+      border-radius: 12px;
       background: #fff;
       color: var(--ink);
       font: inherit;
-      font-size: 1.05rem;
+      font-size: 1.2rem;
       font-weight: 700;
-      text-transform: none;
-      padding: 8px 12px;
+      padding: 10px 44px 10px 14px;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%2316181f' stroke-width='3' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 14px center;
     }}
-    .date {{
-      margin: 8px 0 22px;
-      color: var(--muted);
-      font-size: 1.08rem;
+    .label {{
+      margin: 22px 0 10px;
+      font-size: 1.15rem;
+      font-weight: 800;
+      color: var(--ink);
     }}
+    .label:first-of-type {{ margin-top: 6px; }}
     .balls {{
       display: flex;
       flex-wrap: wrap;
-      gap: 10px;
-      margin: 0 0 18px;
+      gap: 12px;
     }}
     .ball {{
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: clamp(48px, 10vw, 72px);
+      width: clamp(58px, 16vw, 76px);
       aspect-ratio: 1;
       border-radius: 50%;
       color: #fff;
       font-weight: 800;
-      font-size: clamp(1.35rem, 3vw, 2.1rem);
+      font-size: clamp(1.7rem, 5vw, 2.2rem);
       line-height: 1;
-      box-shadow: inset 0 -6px 0 rgba(0,0,0,.16);
+      box-shadow: inset 0 -5px 0 rgba(0,0,0,.18);
     }}
     .main {{ background: var(--blue); }}
     .chance {{ background: var(--red); }}
-    .star {{ background: var(--gold); color: #332b00; }}
+    .star {{ background: var(--gold); color: #2a2200; }}
     .tag {{
-      display: inline-flex;
-      align-items: center;
-      min-height: 42px;
-      border-radius: 8px;
-      border: 1px solid var(--line);
-      background: #f7f7f1;
-      padding: 8px 12px;
-      font-weight: 700;
+      display: inline-block;
+      border-radius: 12px;
+      border: 2px solid var(--line);
+      background: #f3f4ec;
+      padding: 12px 16px;
+      font-size: 1.25rem;
+      font-weight: 800;
+      letter-spacing: .03em;
       color: var(--green);
       overflow-wrap: anywhere;
     }}
-    .section-title {{
-      margin: 20px 0 8px;
-      color: var(--muted);
-      font-size: .92rem;
-      font-weight: 800;
-      text-transform: uppercase;
-    }}
     .codes {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin: 0 0 4px;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
     }}
     .code {{
-      display: inline-flex;
+      display: flex;
       align-items: center;
-      min-height: 38px;
-      border-radius: 8px;
-      border: 1px solid var(--line);
-      background: #f7f7f1;
-      padding: 6px 12px;
-      font-weight: 700;
+      justify-content: center;
+      min-height: 50px;
+      border-radius: 12px;
+      border: 2px solid var(--line);
+      background: #f3f4ec;
+      padding: 8px 10px;
+      font-size: 1.1rem;
+      font-weight: 800;
       font-variant-numeric: tabular-nums;
-      letter-spacing: .04em;
+      letter-spacing: .05em;
       color: var(--ink);
     }}
+    details.extra {{
+      margin-top: 24px;
+      border-top: 2px solid var(--line);
+      padding-top: 8px;
+    }}
+    details.extra > summary {{
+      list-style: none;
+      cursor: pointer;
+      padding: 14px 2px;
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--blue);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }}
+    details.extra > summary::-webkit-details-marker {{ display: none; }}
+    details.extra > summary::before {{
+      content: "+";
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 2px solid var(--blue);
+      font-size: 1.4rem;
+      line-height: 1;
+    }}
+    details.extra[open] > summary::before {{ content: "\\2212"; }}
     .detail {{
-      margin: 8px 0 0;
+      margin: 16px 0 0;
+      color: var(--ink);
+      font-size: 1.1rem;
+    }}
+    .next {{
+      margin: 24px 0 0;
+      padding: 16px 18px;
+      background: #f3f4ec;
+      border-radius: 12px;
+      font-size: 1.1rem;
+    }}
+    .next > span {{
+      display: block;
+      font-weight: 800;
       color: var(--muted);
-      font-size: 1rem;
+      margin-bottom: 8px;
     }}
-    @media (max-width: 760px) {{
-      header {{
-        display: block;
-      }}
-      .grid {{
-        grid-template-columns: 1fr;
-      }}
-      .game-card {{
-        padding: 18px;
-      }}
-    }}
+    .next-date {{ margin: 0; font-size: 1.2rem; font-weight: 800; }}
+    .next-line {{ margin: 4px 0 0; }}
   </style>
 </head>
 <body>
   <main>
     <header>
-      <div>
-        <h1>Resultats FDJ</h1>
-        <p class="updated">Mis a jour le {escape(bundle["updated_label"])}</p>
-      </div>
+      <h1>Resultats du Loto<br>et de l'EuroMillions</h1>
+      <p class="updated">Mis a jour le {escape(bundle["updated_label"])}</p>
     </header>
 
-    <div class="grid">
-      <section class="game-card" aria-labelledby="loto-title">
-        <h2 id="loto-title">LOTO</h2>
-        <label class="history-picker" for="loto-history">
-          <span>Date du tirage</span>
-          <select id="loto-history"></select>
-        </label>
-        <p class="date" id="loto-date">{escape(loto["draw_date"])} a {escape(loto["draw_time"])}</p>
-        <div class="balls" id="loto-numbers" aria-label="Numeros LOTO">{balls(loto["numbers"])}</div>
-        <div class="section-title">Numero Chance</div>
-        <div class="balls" id="loto-chance" aria-label="Numero Chance">{balls(loto["chance"], "chance")}</div>
-        <div class="section-title">Second tirage</div>
+    <section class="game-card" aria-labelledby="loto-title">
+      <div class="loto-bar"></div>
+      <h2 id="loto-title">Loto</h2>
+      <label class="history-picker" for="loto-history">
+        <span>Choisir la date du tirage</span>
+        <select id="loto-history"></select>
+      </label>
+
+      <p class="label">Les 5 numeros</p>
+      <div class="balls" id="loto-numbers" aria-label="Numeros LOTO">{balls(loto["numbers"])}</div>
+
+      <p class="label">Numero Chance</p>
+      <div class="balls" id="loto-chance" aria-label="Numero Chance">{balls(loto["chance"], "chance")}</div>
+
+      <div class="next">
+        <span>Prochain tirage</span>
+        {next_draw_block(loto["next_draw"])}
+      </div>
+
+      <details class="extra">
+        <summary>Voir le second tirage et les codes</summary>
+        <p class="label">Second tirage</p>
         <div class="balls" id="loto-second" aria-label="Second tirage LOTO">{balls(loto["second_draw"])}</div>
         <p class="detail" id="loto-joker">Joker+ : <strong>{escape(loto["joker"] or "non publie")}</strong></p>
-        <div class="section-title">Codes gagnants</div>
+        <p class="label">Codes gagnants</p>
         <div class="codes" id="loto-codes" aria-label="Codes gagnants LOTO">{codes(loto.get("raffle_codes", []))}</div>
-        <p class="detail">Prochain tirage : <strong>{escape(loto["next_draw"] or "non publie")}</strong></p>
-      </section>
+      </details>
+    </section>
 
-      <section class="game-card" aria-labelledby="euro-title">
-        <h2 id="euro-title">EuroMillions</h2>
-        <label class="history-picker" for="euro-history">
-          <span>Date du tirage</span>
-          <select id="euro-history"></select>
-        </label>
-        <p class="date" id="euro-date">{escape(euro["draw_date"])} a {escape(euro["draw_time"])}</p>
-        <div class="balls" id="euro-numbers" aria-label="Numeros EuroMillions">{balls(euro["numbers"])}</div>
-        <div class="section-title">Etoiles</div>
-        <div class="balls" id="euro-stars" aria-label="Etoiles EuroMillions">{balls(euro["stars"], "star")}</div>
-        <div class="section-title">My Million</div>
-        <div class="tag" id="euro-my-million">{escape(", ".join(euro["my_million"]) or "non publie")}</div>
-        <p class="detail">Prochain tirage : <strong>{escape(euro["next_draw"] or "non publie")}</strong></p>
-      </section>
-    </div>
+    <section class="game-card" aria-labelledby="euro-title">
+      <div class="euro-bar"></div>
+      <h2 id="euro-title">EuroMillions</h2>
+      <label class="history-picker" for="euro-history">
+        <span>Choisir la date du tirage</span>
+        <select id="euro-history"></select>
+      </label>
+
+      <p class="label">Les 5 numeros</p>
+      <div class="balls" id="euro-numbers" aria-label="Numeros EuroMillions">{balls(euro["numbers"])}</div>
+
+      <p class="label">Les 2 etoiles</p>
+      <div class="balls" id="euro-stars" aria-label="Etoiles EuroMillions">{balls(euro["stars"], "star")}</div>
+
+      <p class="label">My Million</p>
+      <div class="tag" id="euro-my-million">{escape(", ".join(euro["my_million"]) or "non publie")}</div>
+
+      <div class="next">
+        <span>Prochain tirage</span>
+        {next_draw_block(euro["next_draw"])}
+      </div>
+    </section>
   </main>
   <script id="results-data" type="application/json">{history_json}</script>
   <script>
@@ -709,7 +788,6 @@ def render_html(bundle: dict[str, Any]) -> str:
     }}
 
     function renderLoto(item) {{
-      document.getElementById("loto-date").textContent = `${{item.draw_date}} a ${{item.draw_time}}`;
       document.getElementById("loto-numbers").innerHTML = renderBalls(item.numbers, "main");
       document.getElementById("loto-chance").innerHTML = renderBalls(item.chance, "chance");
       document.getElementById("loto-second").innerHTML = renderBalls(item.second_draw, "main");
@@ -719,7 +797,6 @@ def render_html(bundle: dict[str, Any]) -> str:
     }}
 
     function renderEuroMillions(item) {{
-      document.getElementById("euro-date").textContent = `${{item.draw_date}} a ${{item.draw_time}}`;
       document.getElementById("euro-numbers").innerHTML = renderBalls(item.numbers, "main");
       document.getElementById("euro-stars").innerHTML = renderBalls(item.stars, "star");
       document.getElementById("euro-my-million").textContent =
