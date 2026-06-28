@@ -430,6 +430,12 @@ def balls(values: list[int], kind: str = "main") -> str:
     return "".join(f'<span class="ball {kind}">{escape(value)}</span>' for value in values)
 
 
+def codes(values: list[str]) -> str:
+    if not values:
+        return '<span class="code">non publie</span>'
+    return "".join(f'<span class="code">{escape(value)}</span>' for value in values)
+
+
 def render_html(bundle: dict[str, Any]) -> str:
     loto = bundle["loto"]
     euro = bundle["euromillions"]
@@ -584,6 +590,25 @@ def render_html(bundle: dict[str, Any]) -> str:
       font-weight: 800;
       text-transform: uppercase;
     }}
+    .codes {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 0 0 4px;
+    }}
+    .code {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 38px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #f7f7f1;
+      padding: 6px 12px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: .04em;
+      color: var(--ink);
+    }}
     .detail {{
       margin: 8px 0 0;
       color: var(--muted);
@@ -625,6 +650,8 @@ def render_html(bundle: dict[str, Any]) -> str:
         <div class="section-title">Second tirage</div>
         <div class="balls" id="loto-second" aria-label="Second tirage LOTO">{balls(loto["second_draw"])}</div>
         <p class="detail" id="loto-joker">Joker+ : <strong>{escape(loto["joker"] or "non publie")}</strong></p>
+        <div class="section-title">Codes gagnants</div>
+        <div class="codes" id="loto-codes" aria-label="Codes gagnants LOTO">{codes(loto.get("raffle_codes", []))}</div>
         <p class="detail">Prochain tirage : <strong>{escape(loto["next_draw"] or "non publie")}</strong></p>
       </section>
 
@@ -664,6 +691,15 @@ def render_html(bundle: dict[str, Any]) -> str:
         .join("");
     }}
 
+    function renderCodes(values) {{
+      if (!values || values.length === 0) {{
+        return `<span class="code">non publie</span>`;
+      }}
+      return values
+        .map((value) => `<span class="code">${{escapeHtml(value)}}</span>`)
+        .join("");
+    }}
+
     function fillSelect(selectId, items) {{
       const select = document.getElementById(selectId);
       select.innerHTML = items
@@ -679,6 +715,7 @@ def render_html(bundle: dict[str, Any]) -> str:
       document.getElementById("loto-second").innerHTML = renderBalls(item.second_draw, "main");
       document.getElementById("loto-joker").innerHTML =
         `Joker+ : <strong>${{escapeHtml(item.joker || "non publie")}}</strong>`;
+      document.getElementById("loto-codes").innerHTML = renderCodes(item.raffle_codes);
     }}
 
     function renderEuroMillions(item) {{
