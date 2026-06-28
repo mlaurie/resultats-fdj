@@ -36,6 +36,11 @@ FDJ_LATEST_ARCHIVES = {
     "euromillions": "euromillions_202002",
 }
 
+# Tirages exceptionnels (Grand Loto, Super Loto) : meme format CSV que le Loto
+# classique mais publies dans des archives separees, qu'on fusionne dans
+# l'historique Loto.
+FDJ_LOTO_EXTRA_ARCHIVES = ["superloto_201907", "grandloto_201912"]
+
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
@@ -272,25 +277,34 @@ def format_plain_date(value: date) -> str:
     return f"{DAYS[value.weekday()]} {value.day} {MONTHS[value.month - 1]} {value.year}"
 
 
-def archive_download_url(game: str) -> str:
+def archive_urls(game: str) -> dict[str, str]:
+    """Map each downloadable archive name to its FDJ URL for a game."""
+
     html_text, _ = fetch_html(FDJ_HISTORY_URLS[game])
-    wanted = FDJ_LATEST_ARCHIVES[game]
+    urls: dict[str, str] = {}
 
     for anchor in re.finditer(r"<a\b[^>]*>", html_text):
         attrs = dict(re.findall(r'([:\w-]+)="([^"]*)"', anchor.group(0)))
-        if attrs.get("download") == wanted and attrs.get("href"):
-            return html.unescape(attrs["href"])
+        name = attrs.get("download")
+        if name and attrs.get("href"):
+            urls.setdefault(name, html.unescape(attrs["href"]))
 
-    raise FDJError(f"Archive FDJ introuvable pour {game}.")
+    return urls
 
 
-def archive_rows(game: str) -> list[dict[str, str]]:
-    archive = fetch_bytes(archive_download_url(game))
+def archive_names(game: str) -> list[str]:
+    if game == "loto":
+        return [FDJ_LATEST_ARCHIVES[game], *FDJ_LOTO_EXTRA_ARCHIVES]
+    return [FDJ_LATEST_ARCHIVES[game]]
+
+
+def archive_rows_from_url(url: str) -> list[dict[str, str]]:
+    archive = fetch_bytes(url)
 
     with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
         csv_names = [name for name in zipped.namelist() if name.lower().endswith(".csv")]
         if not csv_names:
-            raise FDJError(f"Aucun CSV dans l'archive {game}.")
+            raise FDJError(f"Aucun CSV dans l'archive {url}.")
         csv_text = zipped.read(csv_names[0]).decode("utf-8-sig")
 
     return list(csv.DictReader(io.StringIO(csv_text), delimiter=";"))
@@ -345,14 +359,26 @@ def normalize_euro_archive_row(row: dict[str, str]) -> dict[str, Any]:
 def build_archive_history(game: str, days: int = 31) -> list[dict[str, Any]]:
     cutoff = datetime.now().date() - timedelta(days=days)
     normalizer = normalize_loto_archive_row if game == "loto" else normalize_euro_archive_row
+    urls = archive_urls(game)
     history: list[dict[str, Any]] = []
+    seen: set[str] = set()
 
-    for row in archive_rows(game):
-        draw_date = parse_csv_date(row["date_de_tirage"])
-        if draw_date < cutoff:
-            break
-        history.append(normalizer(row))
+    for name in archive_names(game):
+        url = urls.get(name)
+        if not url:
+            continue
+        for row in archive_rows_from_url(url):
+            draw_date = parse_csv_date(row["date_de_tirage"])
+            if draw_date < cutoff:
+                # Chaque archive est triee du plus recent au plus ancien.
+                break
+            item = normalizer(row)
+            if item["date_key"] in seen:
+                continue
+            seen.add(item["date_key"])
+            history.append(item)
 
+    history.sort(key=lambda item: item["date_key"], reverse=True)
     return history
 
 
